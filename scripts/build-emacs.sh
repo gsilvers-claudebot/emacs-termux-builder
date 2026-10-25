@@ -16,6 +16,8 @@ set -euo pipefail
 src=${1:?usage: build-emacs.sh EMACS_SRC_DIR OUT_DIR}
 out=${2:?usage: build-emacs.sh EMACS_SRC_DIR OUT_DIR}
 here=$(cd "$(dirname "$0")" && pwd)
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
 
 : "${ANDROID_HOME:?ANDROID_HOME must be set}"
 : "${ANDROID_NDK_HOME:?ANDROID_NDK_HOME must be set}"
@@ -54,7 +56,6 @@ cd "$src"
 
 make -j"$(nproc)" all
 
-mkdir -p "$out"
 shopt -s nullglob
 apks=(java/emacs-*-arm64-v8a.apk)
 [ ${#apks[@]} -eq 1 ] || { echo "Expected one APK, found: ${apks[*]:-none}" >&2; exit 1; }
