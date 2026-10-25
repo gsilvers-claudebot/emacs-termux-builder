@@ -1,0 +1,299 @@
+name: Build Emacs + Termux
+
+# Runs only when started by hand: Actions → Build Emacs + Termux → Run
+# workflow, or `gh workflow run build.yml`.
+on:
+  workflow_dispatch:
+    inputs:
+      emacs_tag:
+        description: "Emacs tag (e.g. emacs-31.1); empty = latest stable"
+        required: false
+        default: ""
+      termux_tag:
+        description: "Termux app tag (e.g. v0.118.3); empty = latest release"
+        required: false
+        default: ""
+      publish:
+        description: "Publish a GitHub release (off = test build, APKs kept as a workflow artifact)"
+        type: boolean
+        default: true
+      force:
+        description: "Rebuild and replace the release if it already exists"
+        type: boolean
+        default: false
+      emacs_debug:
+        description: "Build a debuggable Emacs"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  ANDROID_API: "36"
+  BUILD_TOOLS: "36.0.0"
+  EMACS_NDK: "27.2.12479018"
+  MIN_SDK: "29"
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      emacs_tag: ${{ steps.v.outputs.emacs_tag }}
+      emacs_commit: ${{ steps.v.outputs.emacs_commit }}
+      termux_tag: ${{ steps.v.outputs.termux_tag }}
+      termux_commit: ${{ steps.v.outputs.termux_commit }}
+      release_tag: ${{ steps.v.outputs.release_tag }}
+      build: ${{ steps.v.outputs.build }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EMACS_TAG: ${{ inputs.emacs_tag }}
+          TERMUX_TAG: ${{ inputs.termux_tag }}
+          PUBLISH: ${{ inputs.publish }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          emacs_repo=https://github.com/emacs-mirror/emacs
+          if [ -z "$EMACS_TAG" ]; then
+            # Stable releases are tagged emacs-MAJOR.MINOR; pretests and
+            # release candidates carry a third component or a suffix.
+            EMACS_TAG=$(git ls-remote --tags --refs "$emacs_repo" 'emacs-*' \
+              | sed 's|.*refs/tags/||' | grep -E '^emacs-[0-9]+\.[0-9]+$' \
+              | sort -V | tail -1)
+          fi
+          if [ -z "$TERMUX_TAG" ]; then
+            TERMUX_TAG=$(gh api repos/termux/termux-app/releases/latest -q .tag_name)
+          fi
+          emacs_commit=$(git ls-remote "$emacs_repo" "refs/tags/$EMACS_TAG^{}" "refs/tags/$EMACS_TAG" \
+            | sort -k2 -r | head -1 | cut -f1)
+          termux_commit=$(git ls-remote https://github.com/termux/termux-app "refs/tags/$TERMUX_TAG^{}" "refs/tags/$TERMUX_TAG" \
+            | sort -k2 -r | head -1 | cut -f1)
+          [ -n "$emacs_commit" ] || { echo "Unknown Emacs tag $EMACS_TAG"; exit 1; }
+          [ -n "$termux_commit" ] || { echo "Unknown Termux tag $TERMUX_TAG"; exit 1; }
+
+          release_tag="$EMACS_TAG+termux-${TERMUX_TAG#v}"
+          exists=false
+          gh release view "$release_tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exists=true
+
+          build=true; release=$PUBLISH
+          if [ "$PUBLISH" = true ] && [ "$exists" = true ] && [ "$FORCE" != true ]; then
+            # Nothing new to publish; don't spend runner time rebuilding.
+            build=false; release=false
+            echo "::notice::Release $release_tag already exists; nothing to do. Tick 'force' to rebuild it."
+          fi
+
+          {
+            echo "emacs_tag=$EMACS_TAG"
+            echo "emacs_commit=$emacs_commit"
+            echo "termux_tag=$TERMUX_TAG"
+            echo "termux_commit=$termux_commit"
+            echo "release_tag=$release_tag"
+            echo "build=$build"
+            echo "release=$release"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  emacs:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install host packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            autoconf automake texinfo m4 libncurses-dev libgnutls28-dev
+
+      - name: Install Android SDK components
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-$ANDROID_API" "build-tools;$BUILD_TOOLS" "ndk;$EMACS_NDK" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$EMACS_NDK" >> "$GITHUB_ENV"
+
+      - name: Check out Emacs
+        run: |
+          git clone --depth 1 --branch "${{ needs.resolve.outputs.emacs_tag }}" \
+            https://github.com/emacs-mirror/emacs emacs-src
+
+      - uses: actions/cache@v6
+        with:
+          path: ports/tarballs
+          key: ports-${{ hashFiles('ports.sha256') }}
+
+      - name: Build Emacs
+        env:
+          EMACS_DEBUG: ${{ inputs.emacs_debug || 'false' }}
+          PORTS_DIR: ${{ github.workspace }}/ports
+        run: scripts/build-emacs.sh emacs-src out
+
+      - name: Upload config.log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: emacs-config-log
+          path: |
+            emacs-src/config.log
+            emacs-src/cross/config.log
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: emacs-unsigned
+          path: out/*.apk
+          if-no-files-found: error
+
+  termux:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check out Termux
+        run: |
+          git clone --depth 1 --branch "${{ needs.resolve.outputs.termux_tag }}" \
+            https://github.com/termux/termux-app termux-src
+
+      # Termux's Android Gradle Plugin 4.2 / Gradle 7.2 need JDK 11.
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "11"
+
+      - name: Install Android SDK components
+        working-directory: termux-src
+        run: |
+          ndk=$(sed -n 's/^ndkVersion=//p' gradle.properties)
+          compile_sdk=$(sed -n 's/^compileSdkVersion=//p' gradle.properties)
+          # sdkmanager itself needs JDK 17.
+          export JAVA_HOME=$JAVA_HOME_17_X64
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "ndk;$ndk" "platforms;android-$compile_sdk" >/dev/null
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ needs.resolve.outputs.termux_tag }}
+
+      - name: Build Termux
+        run: |
+          tag="${{ needs.resolve.outputs.termux_tag }}"
+          scripts/build-termux.sh termux-src out "${tag}+emacs-termux-builder"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: termux-unsigned
+          path: out/*.apk
+          if-no-files-found: error
+
+  package:
+    needs: [resolve, emacs, termux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: "*-unsigned"
+          path: unsigned
+          merge-multiple: true
+
+      - name: Install build-tools
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;$BUILD_TOOLS" >/dev/null
+
+      # Sign with the key that ships in the Emacs source tree, the same
+      # one the SourceForge Termux builds of Emacs use, so installs of
+      # those (or of upstream Termux re-signed with it) upgrade in place.
+      # Its password is public: it's in java/Makefile.in.
+      - name: Fetch emacs.keystore
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/emacs.keystore" \
+            "https://raw.githubusercontent.com/emacs-mirror/emacs/${{ needs.resolve.outputs.emacs_commit }}/java/emacs.keystore"
+
+      - name: Sign APKs
+        env:
+          KEYSTORE: ${{ runner.temp }}/emacs.keystore
+          KEYSTORE_PASS: emacs1
+          KEY_ALIAS: Emacs keystore
+        run: |
+          APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" \
+            scripts/sign-apks.sh unsigned signed
+          (cd signed && sha256sum *.apk > SHA256SUMS && cat SHA256SUMS)
+
+      - name: Write release notes
+        env:
+          EMACS_TAG: ${{ needs.resolve.outputs.emacs_tag }}
+          EMACS_COMMIT: ${{ needs.resolve.outputs.emacs_commit }}
+          TERMUX_TAG: ${{ needs.resolve.outputs.termux_tag }}
+          TERMUX_COMMIT: ${{ needs.resolve.outputs.termux_commit }}
+        run: |
+          set -euo pipefail
+          cert=$(cat signed/.signing-cert-sha256)
+          {
+            echo "Emacs **$EMACS_TAG** (arm64, shared user ID \`com.termux\`) and Termux **$TERMUX_TAG** (arm64, apt-android-7), both signed with Emacs's \`emacs.keystore\`."
+            echo
+            echo "Install Termux first, then Emacs."
+            echo
+            echo "### Sources"
+            echo "- Emacs: https://github.com/emacs-mirror/emacs/tree/$EMACS_COMMIT"
+            echo "- Termux: https://github.com/termux/termux-app/tree/$TERMUX_COMMIT"
+            echo "- Build scripts: https://github.com/$GITHUB_REPOSITORY/tree/$GITHUB_SHA"
+            echo "- Emacs dependency ports (https://sourceforge.net/projects/android-ports-for-gnu-emacs/files/ unless linked):"
+            awk 'NF { printf "  - %s (sha256 `%s`)\n", ($3 ? "[`" $2 "`](" $3 ")" : "`" $2 "`"), $1 }' ports.sha256
+            echo
+            echo "### Signing"
+            echo "Certificate SHA-256: \`$cert\` (\`emacs.keystore\` from the Emacs source tree, the same key the SourceForge Termux builds of Emacs use)."
+            echo
+            echo "### Checksums"
+            echo '```'
+            cat signed/SHA256SUMS
+            echo '```'
+          } > notes.md
+          cat notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: signed-apks
+          path: |
+            signed/*.apk
+            signed/SHA256SUMS
+            notes.md
+
+      - name: Publish release
+        if: needs.resolve.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+          gh release create "$TAG" --target "$GITHUB_SHA" \
+            --title "Emacs ${{ needs.resolve.outputs.emacs_tag }} + Termux ${{ needs.resolve.outputs.termux_tag }}" \
+            --notes-file notes.md \
+            signed/*.apk signed/SHA256SUMS
