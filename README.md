@@ -28,7 +28,8 @@ Releases are tagged `emacs-<ver>+termux-<ver>`, e.g.
    API 36 `android.jar`, and the ndk-build dependency ports from the
    [Android ports for GNU Emacs][sf] project: GnuTLS (with gmp, nettle,
    libtasn1, p11-kit), libxml2, tree-sitter, HarfBuzz, giflib,
-   libjpeg-turbo, libpng and libtiff. The ports are pinned by SHA-256
+   libjpeg-turbo, libpng and libtiff, plus upstream libwebp (which
+   ships its own `Android.mk`). The ports are pinned by SHA-256
    in [`ports.sha256`](ports.sha256). The build is a release
    (non-debuggable) build unless you ask for a debug one.
 3. **termux**: builds Termux's release variant with Gradle, split to

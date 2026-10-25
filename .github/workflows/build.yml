@@ -183,6 +183,8 @@ jobs:
         run: |
           ndk=$(sed -n 's/^ndkVersion=//p' gradle.properties)
           compile_sdk=$(sed -n 's/^compileSdkVersion=//p' gradle.properties)
+          # sdkmanager itself needs JDK 17.
+          export JAVA_HOME=$JAVA_HOME_17_X64
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             "ndk;$ndk" "platforms;android-$compile_sdk" >/dev/null
@@ -285,8 +287,8 @@ jobs:
             echo "- Emacs: https://github.com/emacs-mirror/emacs/tree/$EMACS_COMMIT"
             echo "- Termux: https://github.com/termux/termux-app/tree/$TERMUX_COMMIT"
             echo "- Build scripts: https://github.com/$GITHUB_REPOSITORY/tree/$GITHUB_SHA"
-            echo "- Emacs dependency ports (https://sourceforge.net/projects/android-ports-for-gnu-emacs/files/):"
-            sed 's/^\([0-9a-f]*\)  \(.*\)/  - `\2` (sha256 `\1`)/' ports.sha256
+            echo "- Emacs dependency ports (https://sourceforge.net/projects/android-ports-for-gnu-emacs/files/ unless linked):"
+            awk 'NF { printf "  - %s (sha256 `%s`)\n", ($3 ? "[`" $2 "`](" $3 ")" : "`" $2 "`"), $1 }' ports.sha256
             echo
             echo "### Signing"
             echo "Certificate SHA-256: \`$cert\`"

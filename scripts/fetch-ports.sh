@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Download the ndk-build ports of Emacs's dependencies from the
 # "Android ports for GNU Emacs" SourceForge project, verify them against
-# ports.sha256, and unpack them.
+# ports.sha256, and unpack them.  Each ports.sha256 line is
+# "SHA256  FILE [URL]"; without a URL, FILE comes from SourceForge.
 #
 # Usage: fetch-ports.sh DEST_DIR
 #
@@ -17,20 +18,20 @@ base_url=${PORTS_BASE_URL:-https://downloads.sourceforge.net/project/android-por
 mkdir -p "$dest/tarballs"
 dest=$(cd "$dest" && pwd)
 
-while read -r sum file; do
+while read -r sum file url; do
   [ -z "$file" ] && continue
   tarball="$dest/tarballs/$file"
   if [ ! -f "$tarball" ] || ! echo "$sum  $tarball" | sha256sum -c --status; then
     echo "Downloading $file" >&2
     # SourceForge mirrors are occasionally flaky; retry a few times.
     curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors \
-      -o "$tarball" "$base_url/$file"
+      -o "$tarball" "${url:-$base_url/$file}"
   fi
   echo "$sum  $tarball" | sha256sum -c >&2
 done < "$manifest"
 
 dirs=()
-while read -r _ file; do
+while read -r _ file _; do
   [ -z "$file" ] && continue
   top=$(tar tzf "$dest/tarballs/$file" | awk -F/ 'NR == 1 { print $1 }')
   if [ ! -d "$dest/$top" ]; then

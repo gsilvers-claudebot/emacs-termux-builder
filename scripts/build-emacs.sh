@@ -27,9 +27,10 @@ ports_dir=${PORTS_DIR:-$PWD/ports}
 toolchain="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
 android_jar="$ANDROID_HOME/platforms/android-$api/android.jar"
 android_cc="$toolchain/bin/aarch64-linux-android$min_sdk-clang"
-cxx_shared="$toolchain/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
+# HarfBuzz is C++; configure locates libc++_shared.so through this.
+android_cxx="$android_cc++"
 
-for f in "$android_jar" "$android_cc" "$cxx_shared" \
+for f in "$android_jar" "$android_cc" "$android_cxx" \
          "$ANDROID_HOME/build-tools/$build_tools/apksigner"; do
   [ -e "$f" ] || { echo "Missing $f" >&2; exit 1; }
 done
@@ -49,7 +50,7 @@ cd "$src"
   --with-shared-user-id=com.termux \
   "$debug_flag" \
   --with-ndk-path="$ndk_path" \
-  --with-ndk-cxx-shared="$cxx_shared"
+  --with-ndk-cxx="$android_cxx"
 
 make -j"$(nproc)" all
 
