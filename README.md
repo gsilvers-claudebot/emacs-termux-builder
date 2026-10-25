@@ -17,13 +17,16 @@ Releases are tagged `emacs-<ver>+termux-<ver>`, e.g.
 
 ## How it works
 
-`.github/workflows/build.yml` runs daily and on demand:
+`.github/workflows/build.yml` runs only when you start it: open
+**Actions → Build Emacs + Termux → Run workflow**, or run
+`gh workflow run build.yml` from your workstation. Nothing runs on a
+schedule or on pushes.
 
 1. **resolve**: finds the newest stable Emacs tag on
    [emacs-mirror][emacs-mirror] (`emacs-MAJOR.MINOR`, skipping pretests
    and release candidates) and the latest [Termux release][termux-app].
-   The scheduled run stops here if a release for that pair already
-   exists.
+   If a release for that pair already exists, the run stops here, so
+   starting it when nothing is new costs a few seconds.
 2. **emacs**: builds Emacs with NDK r27 (16 KB page size safe), the
    API 36 `android.jar`, and the ndk-build dependency ports from the
    [Android ports for GNU Emacs][sf] project: GnuTLS (with gmp, nettle,
@@ -35,18 +38,26 @@ Releases are tagged `emacs-<ver>+termux-<ver>`, e.g.
 3. **termux**: builds Termux's release variant with Gradle, split to
    arm64 only. Gradle downloads the bootstrap packages from
    termux-packages and checks their hashes.
-4. **package**: re-signs both APKs with `apksigner` using one key,
-   checks that the two certificates match, and publishes a GitHub
-   release whose notes link the exact upstream commits and port
-   tarballs (which is also how the GPL source offer is met).
+4. **package**: re-signs both APKs with `apksigner` using
+   `emacs.keystore`, checks that the two certificates match, and
+   publishes a GitHub release whose notes link the exact upstream
+   commits and port tarballs (which is also how the GPL source offer
+   is met).
 
-Pull requests that touch the workflow or scripts run the full build
-but don't publish anything; the signed APKs are kept as a workflow
-artifact.
+The run options let you pin an Emacs tag (e.g. `emacs-30.2`) or Termux
+tag, do a test build that keeps the APKs as a workflow artifact
+instead of publishing (untick **publish**), rebuild an existing
+release (**force**), or build a debuggable Emacs. From the command
+line, e.g.:
 
-To build on demand, open **Actions → Build Emacs + Termux → Run
-workflow**. You can pin an Emacs tag (e.g. `emacs-30.2`) or Termux tag,
-force a rebuild of an existing release, or build a debuggable Emacs.
+```sh
+gh workflow run build.yml                          # latest Emacs + Termux
+gh workflow run build.yml -f emacs_tag=emacs-30.2  # a specific Emacs
+gh workflow run build.yml -f publish=false         # test build, no release
+```
+
+A full build takes about 15 minutes of runner time. (Actions minutes on
+GitHub's standard runners are free for public repositories.)
 
 The scripts in `scripts/` also run outside Actions on an x86-64 Linux
 machine with the Android SDK, NDK and a JDK installed; read the
@@ -55,53 +66,31 @@ workflow for the exact versions.
 ## Signing key
 
 Android only lets two apps share a user ID if they're signed with the
-same key, and only lets an update install if it's signed with the same
-key as the installed app. Pick one:
+same key, and only lets an update install over an app signed with the
+same key. Both APKs are signed with the `emacs.keystore` that ships in
+the Emacs source tree, the same key the SourceForge Termux builds of
+Emacs use. So installs signed with it (including upstream Termux
+re-signed with it by hand) upgrade in place, and SourceForge builds can
+be mixed in.
 
-### Private key (recommended on GrapheneOS)
+The key and its password are public, so in principle anyone could sign
+an app that installs over these or joins the `com.termux` user ID and
+reads your Termux and Emacs data. Only install APKs from sources you
+trust. Every release lists its certificate SHA-256.
 
-Nobody else can make an update that installs over your apps or joins
-the `com.termux` user ID. Generate a key and store it as repository
-secrets:
-
-```sh
-scripts/make-keystore.sh ~/secure/emacs-termux.jks
-```
-
-This needs `keytool` (any JDK) and an authenticated `gh`, and sets
-`SIGNING_KEYSTORE_BASE64`, `SIGNING_KEYSTORE_PASSWORD` and
-`SIGNING_KEY_ALIAS`. (`SIGNING_KEY_PASSWORD` is also read, if the key
-password differs from the keystore password.) **Back up the keystore
-and password offline.** Losing them means you can never update your
-installs again without a wipe.
-
-Costs:
-
-- Every app in the `com.termux` shared user ID must carry this key.
-  Termux:API, Termux:Widget, Termux:Boot, etc. from F-Droid or GitHub
-  won't install alongside these builds; they'd have to be built here
-  too (not done yet).
-- Moving from apps signed with any other key means uninstalling both
-  apps once (see below).
-
-### Public `emacs.keystore` (the fallback)
-
-If no `SIGNING_KEYSTORE_BASE64` secret is set, the workflow signs with
-the `emacs.keystore` that ships in the Emacs source tree, the same key
-the SourceForge Termux builds of Emacs use. Existing installs signed
-with that key upgrade in place, and SourceForge builds can be mixed
-in. The catch: the key is public, so anyone can sign an app that
-installs over yours or joins the shared user ID and reads your Termux
-and Emacs data. Releases signed this way say so in their notes, and
-every release lists its certificate SHA-256.
+Termux plugins (Termux:API, Widget, Boot, …) share the same user ID, so
+they also have to be signed with `emacs.keystore`; the F-Droid and
+GitHub builds of them won't install alongside these. They aren't built
+here yet.
 
 ## Installing
 
-### First install, or switching keys
+If your current Emacs and Termux are already signed with
+`emacs.keystore`, just install the new APKs over them.
 
-Android fixes an app's shared user ID at install time, and refuses
-updates signed by a different key, so a key switch means a clean
-install.
+Otherwise (first install, or apps signed with another key), Android
+refuses the update and fixes an app's shared user ID at install time,
+so do a clean install:
 
 1. Back up Termux `$HOME` (e.g. `tar` it to shared storage after
    `termux-setup-storage`) and anything under Emacs's `~`.

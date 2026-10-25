@@ -1,9 +1,8 @@
 name: Build Emacs + Termux
 
+# Runs only when started by hand: Actions → Build Emacs + Termux → Run
+# workflow, or `gh workflow run build.yml`.
 on:
-  schedule:
-    # Daily; only builds when a new Emacs or Termux release appears.
-    - cron: "17 6 * * *"
   workflow_dispatch:
     inputs:
       emacs_tag:
@@ -14,23 +13,22 @@ on:
         description: "Termux app tag (e.g. v0.118.3); empty = latest release"
         required: false
         default: ""
+      publish:
+        description: "Publish a GitHub release (off = test build, APKs kept as a workflow artifact)"
+        type: boolean
+        default: true
       force:
-        description: "Replace the release if it already exists"
+        description: "Rebuild and replace the release if it already exists"
         type: boolean
         default: false
       emacs_debug:
         description: "Build a debuggable Emacs"
         type: boolean
         default: false
-  pull_request:
-    paths:
-      - ".github/workflows/build.yml"
-      - "scripts/**"
-      - "ports.sha256"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -58,8 +56,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EMACS_TAG: ${{ inputs.emacs_tag }}
           TERMUX_TAG: ${{ inputs.termux_tag }}
+          PUBLISH: ${{ inputs.publish }}
           FORCE: ${{ inputs.force }}
-          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
           emacs_repo=https://github.com/emacs-mirror/emacs
@@ -84,12 +82,12 @@ jobs:
           exists=false
           gh release view "$release_tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exists=true
 
-          build=true; release=true
-          case "$EVENT" in
-            pull_request) release=false ;;
-            schedule) [ "$exists" = true ] && build=false && release=false ;;
-            workflow_dispatch) [ "$exists" = true ] && [ "$FORCE" != true ] && release=false ;;
-          esac
+          build=true; release=$PUBLISH
+          if [ "$PUBLISH" = true ] && [ "$exists" = true ] && [ "$FORCE" != true ]; then
+            # Nothing new to publish; don't spend runner time rebuilding.
+            build=false; release=false
+            echo "::notice::Release $release_tag already exists; nothing to do. Tick 'force' to rebuild it."
+          fi
 
           {
             echo "emacs_tag=$EMACS_TAG"
@@ -226,46 +224,23 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;$BUILD_TOOLS" >/dev/null
 
-      - name: Prepare signing key
-        id: key
-        env:
-          KS_B64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
-          KS_PASS: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
-          KS_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
-          KEY_PASS: ${{ secrets.SIGNING_KEY_PASSWORD }}
+      # Sign with the key that ships in the Emacs source tree, the same
+      # one the SourceForge Termux builds of Emacs use, so installs of
+      # those (or of upstream Termux re-signed with it) upgrade in place.
+      # Its password is public: it's in java/Makefile.in.
+      - name: Fetch emacs.keystore
         run: |
-          set -euo pipefail
-          ks="$RUNNER_TEMP/signing.keystore"
-          if [ -n "$KS_B64" ]; then
-            echo "$KS_B64" | base64 -d > "$ks"
-            mode=private
-            {
-              echo "KEYSTORE_PASS=$KS_PASS"
-              echo "KEY_ALIAS=${KS_ALIAS:-emacs-termux}"
-              echo "KEY_PASS=${KEY_PASS:-$KS_PASS}"
-            } >> "$GITHUB_ENV"
-          else
-            # No private key configured: fall back to the public key
-            # that ships with Emacs, as the upstream Termux-flavoured
-            # Emacs builds do.
-            curl -fsSL -o "$ks" \
-              "https://raw.githubusercontent.com/emacs-mirror/emacs/${{ needs.resolve.outputs.emacs_commit }}/java/emacs.keystore"
-            mode=public
-            {
-              echo "KEYSTORE_PASS=emacs1"
-              echo "KEY_ALIAS=Emacs keystore"
-              echo "KEY_PASS=emacs1"
-            } >> "$GITHUB_ENV"
-            echo "::warning::No SIGNING_KEYSTORE_BASE64 secret; signing with the public emacs.keystore."
-          fi
-          echo "KEYSTORE=$ks" >> "$GITHUB_ENV"
-          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          curl -fsSL -o "$RUNNER_TEMP/emacs.keystore" \
+            "https://raw.githubusercontent.com/emacs-mirror/emacs/${{ needs.resolve.outputs.emacs_commit }}/java/emacs.keystore"
 
       - name: Sign APKs
+        env:
+          KEYSTORE: ${{ runner.temp }}/emacs.keystore
+          KEYSTORE_PASS: emacs1
+          KEY_ALIAS: Emacs keystore
         run: |
           APKSIGNER="$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" \
             scripts/sign-apks.sh unsigned signed
-          rm -f "$KEYSTORE"
           (cd signed && sha256sum *.apk > SHA256SUMS && cat SHA256SUMS)
 
       - name: Write release notes
@@ -274,12 +249,11 @@ jobs:
           EMACS_COMMIT: ${{ needs.resolve.outputs.emacs_commit }}
           TERMUX_TAG: ${{ needs.resolve.outputs.termux_tag }}
           TERMUX_COMMIT: ${{ needs.resolve.outputs.termux_commit }}
-          KEY_MODE: ${{ steps.key.outputs.mode }}
         run: |
           set -euo pipefail
           cert=$(cat signed/.signing-cert-sha256)
           {
-            echo "Emacs **$EMACS_TAG** (arm64, shared user ID \`com.termux\`) and Termux **$TERMUX_TAG** (arm64, apt-android-7), signed with the same key."
+            echo "Emacs **$EMACS_TAG** (arm64, shared user ID \`com.termux\`) and Termux **$TERMUX_TAG** (arm64, apt-android-7), both signed with Emacs's \`emacs.keystore\`."
             echo
             echo "Install Termux first, then Emacs."
             echo
@@ -291,12 +265,7 @@ jobs:
             awk 'NF { printf "  - %s (sha256 `%s`)\n", ($3 ? "[`" $2 "`](" $3 ")" : "`" $2 "`"), $1 }' ports.sha256
             echo
             echo "### Signing"
-            echo "Certificate SHA-256: \`$cert\`"
-            if [ "$KEY_MODE" = public ]; then
-              echo
-              echo "> [!WARNING]"
-              echo "> Signed with the **public** \`emacs.keystore\` that ships with Emacs. Anyone can sign an app with this key, so a malicious app could install over these and read Termux/Emacs data. Configure a private key (see README) for real use."
-            fi
+            echo "Certificate SHA-256: \`$cert\` (\`emacs.keystore\` from the Emacs source tree, the same key the SourceForge Termux builds of Emacs use)."
             echo
             echo "### Checksums"
             echo '```'
