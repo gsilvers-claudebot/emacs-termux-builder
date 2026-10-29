@@ -29,7 +29,8 @@
 
 (with-demoted-errors "Setting up the bundled Ghostel: %S"
   (let* ((tarball (expand-file-name "ghostel.tar" data-directory))
-         (parent (locate-user-emacs-file "ghostel-bundled/"))
+         (parent (expand-file-name
+                  (locate-user-emacs-file "ghostel-bundled/")))
          (dir (expand-file-name
                (concat site-ghostel-version "-" emacs-version) parent)))
     (when (file-exists-p tarball)

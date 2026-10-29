@@ -6,7 +6,7 @@
 # Environment:
 #   ANDROID_NDK_HOME    Android NDK root (required)
 #   ZIG                 zig binary (default: zig); Ghostel needs exactly
-#                       the Zig version its build.zig names
+#                       the Zig version its build.zig.zon names
 #
 # Writes OUT_DIR/libghostel-module.so, named like a library Android
 # installs from an APK's lib/arm64-v8a/, and OUT_DIR/ghostel-module.version.

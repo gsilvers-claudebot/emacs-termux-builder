@@ -42,9 +42,6 @@ env:
   BUILD_TOOLS: "36.0.0"
   EMACS_NDK: "27.2.12479018"
   MIN_SDK: "29"
-  # Ghostel's build.zig wants exactly this Zig version.
-  ZIG_VERSION: "0.16.0"
-  ZIG_SHA256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
 
 jobs:
   resolve:
@@ -235,8 +232,15 @@ jobs:
     if: needs.resolve.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    outputs:
+      zig_version: ${{ steps.zig.outputs.version }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Check out Ghostel
+        run: |
+          git clone --depth 1 --branch "${{ needs.resolve.outputs.ghostel_tag }}" \
+            https://github.com/dakra/ghostel ghostel-src
 
       - name: Install the Android NDK
         run: |
@@ -244,21 +248,18 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;$EMACS_NDK" >/dev/null
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$EMACS_NDK" >> "$GITHUB_ENV"
 
+      # Ghostel builds only with the exact Zig version its build.zig.zon
+      # names, which changes from release to release.
       - name: Install Zig
+        id: zig
         run: |
           set -euo pipefail
-          name="zig-x86_64-linux-$ZIG_VERSION"
-          curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors \
-            -o "$RUNNER_TEMP/$name.tar.xz" "https://ziglang.org/download/$ZIG_VERSION/$name.tar.xz"
-          sha256sum "$RUNNER_TEMP/$name.tar.xz"
-          echo "$ZIG_SHA256  $RUNNER_TEMP/$name.tar.xz" | sha256sum -c
-          tar xJf "$RUNNER_TEMP/$name.tar.xz" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
-
-      - name: Check out Ghostel
-        run: |
-          git clone --depth 1 --branch "${{ needs.resolve.outputs.ghostel_tag }}" \
-            https://github.com/dakra/ghostel ghostel-src
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+          version=$(sed -n 's/^ *\.minimum_zig_version = "\(.*\)",$/\1/p' ghostel-src/build.zig.zon)
+          [ -n "$version" ] || { echo "No minimum_zig_version in Ghostel's build.zig.zon"; exit 1; }
+          scripts/install-zig.sh "$version" "$RUNNER_TEMP/zig" >> "$GITHUB_PATH"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Build Ghostel's native module
         run: scripts/build-ghostel.sh ghostel-src out
@@ -325,6 +326,7 @@ jobs:
           TERMUX_COMMIT: ${{ needs.resolve.outputs.termux_commit }}
           GHOSTEL_TAG: ${{ needs.resolve.outputs.ghostel_tag }}
           GHOSTEL_COMMIT: ${{ needs.resolve.outputs.ghostel_commit }}
+          ZIG_VERSION: ${{ needs.ghostel.outputs.zig_version }}
         run: |
           set -euo pipefail
           cert=$(cat signed/.signing-cert-sha256)
