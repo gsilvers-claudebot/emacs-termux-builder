@@ -151,10 +151,9 @@ library conflicts.
 ## Ghostel
 
 [Ghostel][ghostel] is a terminal emulator for Emacs built on
-libghostty-vt, the terminal engine from the Ghostty terminal. It works
-out of the box: `M-x ghostel` opens a terminal. Nothing needs
-installing from MELPA, and Ghostel won't ask to download or compile its
-module.
+libghostty-vt, the terminal engine from the Ghostty terminal. It's set
+up so that `M-x ghostel` opens a terminal with nothing to install from
+MELPA and no module for Ghostel to download or compile.
 
 By default Ghostel runs `$SHELL` or `/bin/sh`, which is Android's
 `mksh` and gets no shell integration. To run Termux's bash, with
