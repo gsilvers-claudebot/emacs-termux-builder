@@ -299,6 +299,22 @@ jobs:
           ZIPALIGN="$ANDROID_HOME/build-tools/$BUILD_TOOLS/zipalign" \
             scripts/add-ghostel-module.sh unsigned/emacs-*.apk ghostel/libghostel-module.so
 
+      - name: Check the Emacs APK's Ghostel files
+        run: |
+          set -euo pipefail
+          apk=$(echo unsigned/emacs-*.apk)
+          unzip -l "$apk" lib/arm64-v8a/libghostel-module.so \
+            assets/etc/ghostel.tar assets/lisp/site-start.el
+          unzip -p "$apk" assets/lisp/site-start.el > "$RUNNER_TEMP/site-start.el"
+          grep -n 'defconst site-ghostel-version' "$RUNNER_TEMP/site-start.el"
+          unzip -p "$apk" assets/etc/ghostel.tar > "$RUNNER_TEMP/ghostel.tar"
+          tar tf "$RUNNER_TEMP/ghostel.tar" > "$RUNNER_TEMP/ghostel.list"
+          cat "$RUNNER_TEMP/ghostel.list"
+          for f in ./ghostel.elc ./ghostel-autoloads.el \
+                   ./etc/terminfo/x/xterm-ghostty ./etc/shell/bootstrap/zsh/.zshenv; do
+            grep -qxF "$f" "$RUNNER_TEMP/ghostel.list" || { echo "ghostel.tar lacks $f"; exit 1; }
+          done
+
       # Sign with the key that ships in the Emacs source tree, the same
       # one the SourceForge Termux builds of Emacs use, so installs of
       # those (or of upstream Termux re-signed with it) upgrade in place.
