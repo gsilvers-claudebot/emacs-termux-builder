@@ -13,6 +13,7 @@ set -euo pipefail
 apk=${1:?usage: add-ghostel-module.sh APK MODULE}
 module=${2:?usage: add-ghostel-module.sh APK MODULE}
 : "${ZIPALIGN:?}"
+apk=$(cd "$(dirname "$apk")" && pwd)/$(basename "$apk")
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
